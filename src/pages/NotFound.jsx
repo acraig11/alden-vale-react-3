@@ -1,5 +1,5 @@
 import React from "react";
-import illustration from "../../dist/assets/school-404-page.png";
+import illustration from "../assets/school-404-page.png";
 import "./NotFound.css";
 
 function BookIcon() {
