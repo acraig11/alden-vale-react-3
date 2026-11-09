@@ -1,0 +1,32 @@
+.signature-animation {
+  display: block;
+  width: 100%;
+  max-width: 600px;
+  height: auto;
+  background: #f2f4f7;
+  border-radius: 12px;
+}
+
+.signature-ink {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: write-signature 5s linear infinite;
+}
+
+@keyframes write-signature {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Show a finished signature for reduced-motion preferences. */
+@media (prefers-reduced-motion: reduce) {
+  .signature-ink {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+
+  .signing-pen {
+    display: none;
+  }
+}
