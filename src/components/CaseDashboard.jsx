@@ -20,13 +20,35 @@ async function requestCases(signal, update) {
     },
     body: update ? JSON.stringify(update) : undefined,
   });
-  if (!response.ok) throw new Error(update ? "Could not save this case." : "Could not load cases.");
-  return response.json();
+  const result = await response.json();
+  if (!response.ok) {
+    throw new Error(result.error || (update ? "Could not save this case." : "Could not load cases."));
+  }
+  return result;
 }
 
-function CaseCard({ item, staff }) {
-  const [status, setStatus] = useState(item.status || statuses[0]);
-  const [nextStep, setNextStep] = useState(item.nextStep || "");
+function CaseDetails({ item }) {
+  return (
+    <article>
+      <h3>{item.title || "Case update"}</h3>
+      <dl>
+        <dt>First name</dt><dd>{item.firstName || "—"}</dd>
+        <dt>Last name</dt><dd>{item.lastName || "—"}</dd>
+        <dt>Email</dt><dd>{item.email || "—"}</dd>
+        <dt>Phone number</dt><dd>{item.phone || "—"}</dd>
+        <dt>Case status</dt><dd>{item.status || "Under review"}</dd>
+        <dt>Notes</dt><dd className="case-notes">{item.nextStep || "No notes posted yet."}</dd>
+      </dl>
+    </article>
+  );
+}
+
+function CaseEditor({ account, item, onSave }) {
+  const [firstName, setFirstName] = useState(item?.firstName ?? account.firstName);
+  const [lastName, setLastName] = useState(item?.lastName ?? account.lastName);
+  const [phone, setPhone] = useState(item?.phone ?? account.phone);
+  const [status, setStatus] = useState(item?.status || statuses[0]);
+  const [nextStep, setNextStep] = useState(item?.nextStep || "");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -36,10 +58,12 @@ function CaseCard({ item, staff }) {
     setMessage("");
     try {
       const saved = await requestCases(undefined, {
-        clientId: item.clientId, caseId: item.caseId, status, nextStep,
+        clientId: account.clientId, caseId: item?.caseId,
+        firstName, lastName, phone, status, nextStep,
       });
       setNextStep(saved.nextStep);
-      setMessage("Case updated.");
+      onSave(saved);
+      setMessage("Case saved.");
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -48,32 +72,63 @@ function CaseCard({ item, staff }) {
   }
 
   return (
-    <article>
-      <h3>{item.title || item.caseId}</h3>
-      {staff ? (
-        <form onSubmit={save}>
-          <fieldset disabled={saving}>
-            <label>
-              Case status
-              <select value={status} onChange={(event) => setStatus(event.target.value)}>
-                {statuses.map((option) => <option key={option}>{option}</option>)}
-              </select>
-            </label>
-            <label>
-              Next step
-              <textarea value={nextStep} maxLength={500} onChange={(event) => setNextStep(event.target.value)} />
-            </label>
-            <button className="button" type="submit">{saving ? "Saving…" : "Save changes"}</button>
-          </fieldset>
-          {message && <p role="status">{message}</p>}
-        </form>
-      ) : (
-        <>
-          <p><strong>Case status</strong> {item.status || "Under review"}</p>
-          <p><strong>Next step</strong> {item.nextStep || "No next step posted yet."}</p>
-        </>
+    <form onSubmit={save}>
+      <fieldset className="form-grid" disabled={saving}>
+        <label>First name
+          <input value={firstName} maxLength={100} onChange={(event) => setFirstName(event.target.value)} />
+        </label>
+        <label>Last name
+          <input value={lastName} maxLength={100} onChange={(event) => setLastName(event.target.value)} />
+        </label>
+        <label>Email
+          <input type="email" value={account.email} readOnly />
+        </label>
+        <label>Phone number
+          <input type="tel" value={phone} maxLength={40} onChange={(event) => setPhone(event.target.value)} />
+        </label>
+        <label>Case status
+          <select value={status} onChange={(event) => setStatus(event.target.value)}>
+            {statuses.map((option) => <option key={option}>{option}</option>)}
+          </select>
+        </label>
+        <label>Notes visible to the client
+          <textarea value={nextStep} maxLength={500} onChange={(event) => setNextStep(event.target.value)} />
+        </label>
+        <button className="button" type="submit">{saving ? "Saving…" : "Save case"}</button>
+      </fieldset>
+      {message && <p role="status">{message}</p>}
+    </form>
+  );
+}
+
+function AdminDashboard({ data, onSave }) {
+  const [clientId, setClientId] = useState("");
+  const [caseId, setCaseId] = useState("");
+  const account = data.accounts.find((user) => user.clientId === clientId);
+  const cases = data.cases.filter((item) => item.clientId === clientId);
+  const item = cases.find((entry) => entry.caseId === caseId) || cases[0];
+
+  return (
+    <>
+      <h2>Admin dashboard</h2>
+      <label>User account
+        <select value={clientId} onChange={(event) => {
+          setClientId(event.target.value);
+          setCaseId("");
+        }}>
+          <option value="">Select an account</option>
+          {data.accounts.map((user) => <option key={user.clientId} value={user.clientId}>{user.email}</option>)}
+        </select>
+      </label>
+      {cases.length > 1 && (
+        <label>Case
+          <select value={item.caseId} onChange={(event) => setCaseId(event.target.value)}>
+            {cases.map((entry) => <option key={entry.caseId} value={entry.caseId}>{entry.title || entry.caseId}</option>)}
+          </select>
+        </label>
       )}
-    </article>
+      {account && <CaseEditor key={JSON.stringify([clientId, item?.caseId || "primary"])} account={account} item={item} onSave={onSave} />}
+    </>
   );
 }
 
@@ -89,16 +144,26 @@ export default function CaseDashboard({ signOut }) {
     return () => controller.abort();
   }, []);
 
+  function updateCase(saved) {
+    setData((current) => ({
+      ...current,
+      cases: [...current.cases.filter((item) => item.clientId !== saved.clientId || item.caseId !== saved.caseId), saved],
+    }));
+  }
+
   return (
-    <>
-      <h2>{data?.staff ? "Cases" : "Your cases"}</h2>
+    <section className="case-dashboard">
       {error && <p role="alert">{error}</p>}
       {!data && !error && <p role="status">Loading cases…</p>}
-      {data?.cases.length === 0 && <p>No cases to display.</p>}
-      {data?.cases.map((item) => (
-        <CaseCard key={JSON.stringify([item.clientId, item.caseId])} item={item} staff={data.staff} />
-      ))}
+      {data?.admin && <AdminDashboard data={data} onSave={updateCase} />}
+      {data && !data.admin && (
+        <>
+          <h2>Your cases</h2>
+          {data.cases.length === 0 && <p>No cases to display.</p>}
+          {data.cases.map((item) => <CaseDetails key={item.caseId} item={item} />)}
+        </>
+      )}
       <button className="button" type="button" onClick={signOut}>Sign out</button>
-    </>
+    </section>
   );
 }

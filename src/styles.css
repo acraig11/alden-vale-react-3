@@ -538,3 +538,24 @@ main > .wrap > .principles {
   object-fit: contain;
   flex-shrink: 0;
 }
+.case-dashboard label {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.case-dashboard fieldset {
+  border: 0;
+  margin: 16px 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.case-dashboard dd {
+  margin: 0 0 12px;
+  overflow-wrap: anywhere;
+}
+
+.case-dashboard .case-notes {
+  white-space: pre-wrap;
+}

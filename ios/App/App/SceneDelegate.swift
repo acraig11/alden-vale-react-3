@@ -26,14 +26,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 final class TabbedAppViewController: UIViewController, UITabBarDelegate {
     private let webController = TabBridgeViewController()
     private let tabs = UITabBar()
-    private let routes = ["/", "/expertise", "/approach", "/contact"]
+    private let routes = ["/", "/ourpracticeareas", "/ourteam", "/approach", "/contact", "/sign-in"]
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 
-        let titles = ["Home", "Expertise", "Approach", "Contact"]
-        let icons = ["house", "briefcase", "list.bullet", "envelope"]
+        let titles = ["Home", "Practice", "Team", "Approach", "Contact", "Portal"]
+        let icons = ["house", "briefcase", "person.2", "list.bullet", "envelope", "person.crop.circle"]
         tabs.items = titles.indices.map { index in
             UITabBarItem(title: titles[index], image: UIImage(systemName: icons[index]), tag: index)
         }
@@ -42,7 +42,7 @@ final class TabbedAppViewController: UIViewController, UITabBarDelegate {
 
         webController.onRouteChange = { [weak self] path in
             guard let self else { return }
-            self.tabs.selectedItem = self.routes.firstIndex(of: path).flatMap { self.tabs.items?[$0] }
+            self.tabs.selectedItem = self.routes.firstIndex(of: path.lowercased()).flatMap { self.tabs.items?[$0] }
         }
 
         addChild(webController)

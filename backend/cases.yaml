@@ -2,6 +2,8 @@ AWSTemplateFormatVersion: '2010-09-09'
 Parameters:
   UserPoolId:
     Type: String
+  AdminUserId:
+    Type: String
   ClientId:
     Type: String
 Resources:
@@ -41,6 +43,9 @@ Resources:
               - Effect: Allow
                 Action: [dynamodb:Query, dynamodb:Scan, dynamodb:UpdateItem]
                 Resource: !GetAtt Cases.Arn
+              - Effect: Allow
+                Action: [cognito-idp:ListUsers, cognito-idp:AdminGetUser]
+                Resource: !Sub arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}
   Handler:
     Type: AWS::Lambda::Function
     Properties:
@@ -51,15 +56,17 @@ Resources:
       Environment:
         Variables:
           TABLE: !Ref Cases
+          USER_POOL: !Ref UserPoolId
+          ADMIN_USER_ID: !Ref AdminUserId
       Code:
         ZipFile: |
           import json
           import os
-          import re
           import boto3
           from boto3.dynamodb.conditions import Key
 
           table = boto3.resource("dynamodb").Table(os.environ["TABLE"])
+          cognito = boto3.client("cognito-idp")
           statuses = {"Under review", "Active", "Waiting on you",
                       "Waiting on another party", "On hold", "Closed"}
 
@@ -68,57 +75,94 @@ Resources:
                       "headers": {"content-type": "application/json", "cache-control": "no-store"},
                       "body": json.dumps(body)}
 
-          def visible(item, staff):
-              fields = ["caseId", "title", "status", "nextStep"]
-              if staff:
+          def visible(item, admin):
+              fields = ["caseId", "title", "status", "nextStep",
+                        "firstName", "lastName", "email", "phone"]
+              if admin:
                   fields.append("clientId")
               return {field: item[field] for field in fields if field in item}
 
+          def account(attributes):
+              attrs = {entry["Name"]: entry["Value"] for entry in attributes}
+              if attrs.get("email_verified") != "true" or not attrs.get("sub") or not attrs.get("email"):
+                  return None
+              return {"clientId": attrs["sub"], "email": attrs["email"],
+                      "firstName": attrs.get("given_name", ""), "lastName": attrs.get("family_name", ""),
+                      "phone": attrs.get("phone_number", "")}
+
+          def list_accounts():
+              pages = cognito.get_paginator("list_users").paginate(UserPoolId=os.environ["USER_POOL"])
+              accounts = []
+              for page in pages:
+                  for user in page["Users"]:
+                      profile = account(user["Attributes"])
+                      if user["Enabled"] and profile:
+                          accounts.append(profile)
+              return sorted(accounts, key=lambda profile: profile["email"].casefold())
+
           def handler(event, context):
               claims = event["requestContext"]["authorizer"]["jwt"]["claims"]
-              if claims.get("token_use") != "id":
+              if claims.get("token_use") != "id" or not claims.get("sub"):
                   return response(403, {"error": "Sign in again."})
-              groups = re.split(r"[\s,\[\]]+", claims.get("cognito:groups", ""))
-              staff = "Staff" in groups
+              admin = (claims["sub"] == os.environ["ADMIN_USER_ID"]
+                       and claims.get("email", "").casefold() == "alan_craig@msn.com"
+                       and claims.get("email_verified") in ("true", True))
 
               if event["routeKey"] == "GET /cases":
-                  read = table.scan if staff else table.query
-                  args = {} if staff else {"KeyConditionExpression": Key("clientId").eq(claims["sub"])}
+                  read = table.scan if admin else table.query
+                  args = {"ConsistentRead": True}
+                  if not admin:
+                      args["KeyConditionExpression"] = Key("clientId").eq(claims["sub"])
                   items = []
                   while True:
                       page = read(**args)
-                      items.extend(visible(item, staff) for item in page["Items"])
+                      items.extend(visible(item, admin) for item in page["Items"])
                       if "LastEvaluatedKey" not in page:
                           break
                       args["ExclusiveStartKey"] = page["LastEvaluatedKey"]
-                  return response(200, {"staff": staff, "cases": items})
+                  return response(200, {"admin": admin, "cases": items,
+                                        "accounts": list_accounts() if admin else []})
 
-              if not staff:
-                  return response(403, {"error": "Staff access is required."})
+              if not admin:
+                  return response(403, {"error": "Admin access is required."})
               try:
                   body = json.loads(event.get("body") or "{}")
               except ValueError:
                   body = None
               if not isinstance(body, dict):
                   return response(400, {"error": "Invalid case update."})
-              status, step = body.get("status"), body.get("nextStep")
+              status = body.get("status")
               client, case = body.get("clientId"), body.get("caseId")
+              limits = {"firstName": 100, "lastName": 100, "phone": 40, "nextStep": 500}
               if (not isinstance(status, str) or status not in statuses
-                  or not isinstance(step, str) or len(step) > 500
                   or not isinstance(client, str) or not 1 <= len(client) <= 128
-                  or not isinstance(case, str) or not 1 <= len(case) <= 128):
+                  or (case is not None and (not isinstance(case, str) or not 1 <= len(case) <= 128))
+                  or any(not isinstance(body.get(field, ""), str) or len(body.get(field, "")) > limit
+                         for field, limit in limits.items())):
                   return response(400, {"error": "Invalid case update."})
               try:
+                  user = cognito.admin_get_user(UserPoolId=os.environ["USER_POOL"], Username=client)
+              except cognito.exceptions.UserNotFoundException:
+                  return response(404, {"error": "User account not found."})
+              profile = account(user["UserAttributes"])
+              if not user["Enabled"] or not profile or profile["clientId"] != client:
+                  return response(400, {"error": "Select an active account with a verified email."})
+
+              fields = {field: body.get(field, "").strip() for field in limits}
+              fields.update(status=status, email=profile["email"])
+              names = {"#" + field: field for field in fields}
+              values = {":" + field: value for field, value in fields.items()}
+              try:
                   result = table.update_item(
-                      Key={"clientId": client, "caseId": case},
-                      ConditionExpression="attribute_exists(caseId)",
-                      UpdateExpression="SET #status = :status, nextStep = :step",
-                      ExpressionAttributeNames={"#status": "status"},
-                      ExpressionAttributeValues={":status": status, ":step": step.strip()},
+                      Key={"clientId": client, "caseId": case or "primary"},
+                      ConditionExpression="attribute_exists(caseId)" if case else "attribute_not_exists(caseId)",
+                      UpdateExpression="SET " + ", ".join(f"#{field} = :{field}" for field in fields),
+                      ExpressionAttributeNames=names,
+                      ExpressionAttributeValues=values,
                       ReturnValues="ALL_NEW")
               except table.meta.client.exceptions.ConditionalCheckFailedException:
-                  return response(404, {"error": "Case not found."})
-              return response(200, visible(result["Attributes"], staff))
+                  return response(409, {"error": "The case list changed. Refresh and try again."})
+              return response(200, visible(result["Attributes"], admin))
   Api:
     Type: AWS::ApiGatewayV2::Api
     Properties:
