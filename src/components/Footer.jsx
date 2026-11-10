@@ -15,7 +15,7 @@ export default function Footer() {
           </Link>
         </div>
         <div className="footer-bottom">
-          <Link to="/sign-in">Sign in</Link>
+         
           <span>© 2026 GALLI LAW, PLLC </span>
          
         </div>

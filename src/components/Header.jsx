@@ -25,10 +25,11 @@ export default function Header() {
         className={menuOpen ? "open" : ""}
         onClick={() => setMenuOpen(false)}
       >
-        <NavLink to="/ourpracticeareas">Our practice areas</NavLink>
+        <NavLink to="/ourpracticeareas">Our Practice Areas</NavLink>
         <NavLink to="/ourteam">Our team</NavLink>
         <NavLink to="/approach">Our approach</NavLink>
         <NavLink to="/contact">Contact</NavLink>
+        <NavLink to="/sign-in">Client Portal</NavLink>
         <Link className="button" to="/contact">
           Let’s talk <span>↗</span>
         </Link>
