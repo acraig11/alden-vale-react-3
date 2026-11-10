@@ -1,0 +1,179 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  UserPoolId:
+    Type: String
+  ClientId:
+    Type: String
+Resources:
+  Staff:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Staff
+      UserPoolId: !Ref UserPoolId
+  Cases:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: clientId, AttributeType: S}
+        - {AttributeName: caseId, AttributeType: S}
+      KeySchema:
+        - {AttributeName: clientId, KeyType: HASH}
+        - {AttributeName: caseId, KeyType: RANGE}
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: Cases
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:Query, dynamodb:Scan, dynamodb:UpdateItem]
+                Resource: !GetAtt Cases.Arn
+  Handler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Timeout: 15
+      Role: !GetAtt Role.Arn
+      Environment:
+        Variables:
+          TABLE: !Ref Cases
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import re
+          import boto3
+          from boto3.dynamodb.conditions import Key
+
+          table = boto3.resource("dynamodb").Table(os.environ["TABLE"])
+          statuses = {"Under review", "Active", "Waiting on you",
+                      "Waiting on another party", "On hold", "Closed"}
+
+          def response(code, body):
+              return {"statusCode": code,
+                      "headers": {"content-type": "application/json", "cache-control": "no-store"},
+                      "body": json.dumps(body)}
+
+          def visible(item, staff):
+              fields = ["caseId", "title", "status", "nextStep"]
+              if staff:
+                  fields.append("clientId")
+              return {field: item[field] for field in fields if field in item}
+
+          def handler(event, context):
+              claims = event["requestContext"]["authorizer"]["jwt"]["claims"]
+              if claims.get("token_use") != "id":
+                  return response(403, {"error": "Sign in again."})
+              groups = re.split(r"[\s,\[\]]+", claims.get("cognito:groups", ""))
+              staff = "Staff" in groups
+
+              if event["routeKey"] == "GET /cases":
+                  read = table.scan if staff else table.query
+                  args = {} if staff else {"KeyConditionExpression": Key("clientId").eq(claims["sub"])}
+                  items = []
+                  while True:
+                      page = read(**args)
+                      items.extend(visible(item, staff) for item in page["Items"])
+                      if "LastEvaluatedKey" not in page:
+                          break
+                      args["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+                  return response(200, {"staff": staff, "cases": items})
+
+              if not staff:
+                  return response(403, {"error": "Staff access is required."})
+              try:
+                  body = json.loads(event.get("body") or "{}")
+              except ValueError:
+                  body = None
+              if not isinstance(body, dict):
+                  return response(400, {"error": "Invalid case update."})
+              status, step = body.get("status"), body.get("nextStep")
+              client, case = body.get("clientId"), body.get("caseId")
+              if (not isinstance(status, str) or status not in statuses
+                  or not isinstance(step, str) or len(step) > 500
+                  or not isinstance(client, str) or not 1 <= len(client) <= 128
+                  or not isinstance(case, str) or not 1 <= len(case) <= 128):
+                  return response(400, {"error": "Invalid case update."})
+              try:
+                  result = table.update_item(
+                      Key={"clientId": client, "caseId": case},
+                      ConditionExpression="attribute_exists(caseId)",
+                      UpdateExpression="SET #status = :status, nextStep = :step",
+                      ExpressionAttributeNames={"#status": "status"},
+                      ExpressionAttributeValues={":status": status, ":step": step.strip()},
+                      ReturnValues="ALL_NEW")
+              except table.meta.client.exceptions.ConditionalCheckFailedException:
+                  return response(404, {"error": "Case not found."})
+              return response(200, visible(result["Attributes"], staff))
+  Api:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: Alden Vale Cases
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowHeaders: [Authorization, Content-Type]
+        AllowMethods: [GET, PATCH, OPTIONS]
+  Auth:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref Api
+      Name: Alden-Vale-Cognito
+      AuthorizerType: JWT
+      IdentitySource: ['$request.header.Authorization']
+      JwtConfiguration:
+        Audience: [!Ref ClientId]
+        Issuer: !Sub https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${UserPoolId}
+  Integration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref Api
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt Handler.Arn
+      PayloadFormatVersion: '2.0'
+  ListCases:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Api
+      RouteKey: GET /cases
+      AuthorizationType: JWT
+      AuthorizerId: !Ref Auth
+      Target: !Sub integrations/${Integration}
+  UpdateCase:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Api
+      RouteKey: PATCH /cases
+      AuthorizationType: JWT
+      AuthorizerId: !Ref Auth
+      Target: !Sub integrations/${Integration}
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref Api
+      StageName: $default
+      AutoDeploy: true
+  Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref Handler
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/*/cases
+Outputs:
+  CasesUrl:
+    Value: !Sub ${Api.ApiEndpoint}/cases

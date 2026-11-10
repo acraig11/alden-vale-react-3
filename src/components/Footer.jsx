@@ -15,6 +15,7 @@ export default function Footer() {
           </Link>
         </div>
         <div className="footer-bottom">
+          <Link to="/sign-in">Sign in</Link>
           <span>© 2026 Alden & Vale · Illustrative website concept</span>
           <span>General information only. No legal advice is provided.</span>
         </div>

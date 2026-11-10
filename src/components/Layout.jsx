@@ -31,6 +31,7 @@ function RouteEffects() {
       "/expertise": "Our Expertise",
       "/approach": "Our Approach",
       "/contact": "Contact",
+      "/sign-in": "Sign in",
       "/signatureAnimation": "Signature Animation",
     };
 

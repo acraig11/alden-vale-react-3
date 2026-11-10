@@ -530,3 +530,11 @@ main > .wrap > .principles {
   margin-left: 40px;
   gap: 16px;
 }
+.header-logo {
+  display: block;
+  height: 28px;
+  width: auto;
+  max-width: 120px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
