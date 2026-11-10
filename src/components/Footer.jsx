@@ -7,8 +7,8 @@ export default function Footer() {
       <div className="wrap">
         <div className="footer-top">
           <Link className="brand" to="/">
-            Alden <span style={{ color: "#a18451" }}>&</span> Vale
-            <small>Attorneys & counselors</small>
+            GALLI <span style={{ color: "#a18451" }}></span> LAW, PLLC
+            
           </Link>
           <Link className="text-link" to="/contact">
             Let’s find your way forward <span>&#8599;</span>
@@ -16,8 +16,8 @@ export default function Footer() {
         </div>
         <div className="footer-bottom">
           <Link to="/sign-in">Sign in</Link>
-          <span>© 2026 Alden & Vale · Illustrative website concept</span>
-          <span>General information only. No legal advice is provided.</span>
+          <span>© 2026 GALLI LAW, PLLC </span>
+         
         </div>
       </div>
     </footer>
